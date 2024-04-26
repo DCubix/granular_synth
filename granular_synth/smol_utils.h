@@ -30,6 +30,7 @@ distribution.
 #	endif 
 #	define WIN32_LEAN_AND_MEAN
 #	include <Windows.h>
+#	include <Shlwapi.h>
 #elif defined(__linux__) 
 #	ifndef SMOL_PLATFORM_LINUX
 #		define SMOL_PLATFORM_LINUX
@@ -52,9 +53,46 @@ distribution.
 #	endif 
 #	include <emscripten.h>
 #endif 
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
+
+#if defined(SMOL_PLATFORM_WINDOWS)
+#	ifndef SMOL_BREAKPOINT
+#		ifdef _MSC_VER
+#			define SMOL_BREAKPOINT() __debugbreak() //MSVC uses this
+#		else
+#			define SMOL_BREAKPOINT() DebugBreak()
+#		endif 
+#	endif 
+#elif defined(SMOL_PLATFORM_WEB)
+#	define SMOL_BREAKPOINT() EM_ASM({ debugger; })
+#elif defined(SMOL_PLATFORM_LINUX)
+#	ifndef SMOL_BREAKPOINT
+#		define SMOL_BREAKPOINT() raise(SIGTRAP)
+#	endif
+#endif 
+
+#ifndef SMOL_SYMBOLIFY
+#define SMOL_SYMBOLIFY(x) #x
+#endif 
+
+#ifndef SMOL_STRINGIFY
+#define SMOL_STRINGIFY(x) SMOL_SYMBOLIFY(x)
+#endif 
+
+#ifndef SMOL_ASSERT
+#define SMOL_ASSERT(condition) \
+	if(!(condition)) \
+		puts(\
+			"SMOL FRAME ASSERTION FAILED!\n" \
+			"CONDITION: " #condition "\n" \
+			"IN FILE: '" __FILE__ "'\n" \
+			"ON LINE: " SMOL_STRINGIFY(__LINE__) "\n" \
+		), \
+		SMOL_BREAKPOINT()
+#endif 
 
 #define SMOL_RAND_MAX 0x7FFFFFFF
 
@@ -86,6 +124,23 @@ typedef struct _smol_file_info smol_file_info_t;
 #	endif 
 #	define SMOL_THREAD_LOCAL __thread
 #endif 
+
+#ifndef SMOL_ALLOC
+#define SMOL_ALLOC( size ) malloc(size)
+#endif 
+
+#ifndef SMOL_FREE
+#define SMOL_FREE( ptr ) free(ptr)
+#endif 
+
+#ifndef SMOL_REALLOC
+#define SMOL_REALLOC( old_ptr, new_size ) realloc(old_ptr, new_size)
+#endif 
+
+#ifndef smol_offset_of
+#	define smol_offset_of(Type, Field) ((void*)&(((Type*)0)->Field))
+#endif 
+
 //smol_timer - Returns high precision system up time in seconds on
 //             Windows, and high precision time since Unix epoch on Linux. 
 //Returns: double - containing seconds.microseconds since the last start 
@@ -142,6 +197,20 @@ int smol_utf16_to_utf8(const unsigned short* utf16, int buf_len, char* utf8);
 // - unsigned short* utf16          -- the buffer where the result is stored
 //Returns: int                      -- number of utf16 symbols written
 int smol_utf8_to_utf16(const char* utf8, int buf_len, unsigned short* utf16);
+
+/* ---------------------------------------------- */
+/* A SORTING UTILITITY BECAUSE QSORT WON'T CUT IT */
+/* ---------------------------------------------- */
+
+typedef int(*smol_sort_proc)(const void* a, const void* b, void* user_data);
+
+void smol_sort(void* data, int num_elements, int element_size, smol_sort_proc compare, void* user_data);
+
+#define smol_sort_array_user(data, compare, user_data) smol_sort(data, sizeof(data) / sizeof(*data), sizeof(*data), compare, user_data)
+#define smol_sort_array(data, compare) smol_sort_array_user(data, compare, NULL)
+
+#define smol_sort_vector_user(vec, compare, user_data) smol_sort((void*)((vec)->data), (vec)->count, sizeof(*(vec)->data), compare, user_data)
+#define smol_sort_vector(vec, compare) smol_sort_vector_user(vec, compare, NULL)
 
 /* --------------------------------------- */
 /* A RANDOM NUMBER GENERATOR FUNCTIONALITY */
@@ -275,7 +344,7 @@ SMOL_INLINE double smol_clampd(double v, double low, double high) {
 // - float e1           -- The edge1
 // - float value        -- The value remapped, normalized and clamped.
 //Returns: float - containing the value between [0..1]
-SMOL_INLINE smol_linear_stepf(float e0, float e1, float value) {
+SMOL_INLINE float smol_linear_stepf(float e0, float e1, float value) {
 	return smol_clampf((value - e0) / (e1 - e0), 0.f, 1.f);
 }
 
@@ -285,7 +354,7 @@ SMOL_INLINE smol_linear_stepf(float e0, float e1, float value) {
 // - double e1           -- The edge1
 // - double value        -- The value remapped, normalized and clamped.
 //Returns: double - containing the value between [0..1]
-SMOL_INLINE smol_linear_stepd(double e0, double e1, double value) {
+SMOL_INLINE double smol_linear_stepd(double e0, double e1, double value) {
 	return smol_clampd((value - e0) / (e1 - e0), 0., 1.);
 }
 
@@ -314,6 +383,288 @@ SMOL_INLINE double smol_smooth_stepd(double e0, double e1, double value) {
 	return res;
 }
 
+/* --------------------------------------- */
+/*  Dynamic Array (std::vector) like stuff */
+/* --------------------------------------- */
+
+//This macro can be used to define a vector type, or declare a local variable: smol_vector(int) int_vec;
+#define smol_vector(type) \
+struct { \
+	int allocation;\
+	int count; \
+	type* data; \
+}
+
+//smol_vector_init - Init a vector
+//Arguments:
+// - vec -- The vector to be initialized
+// - init_alloc -- The initial allocation of the vector
+#if defined(_MSC_VER)
+#define smol_vector_init(vec, init_alloc) { \
+	(vec)->allocation = (init_alloc); \
+	(vec)->count = 0; \
+	((void**)(&(vec)->data))[0] = SMOL_ALLOC(sizeof(*((vec)->data))*(vec)->allocation); \
+} (void)0
+#else 
+#define smol_vector_init(vec, init_alloc) { \
+	(vec)->allocation = (init_alloc); \
+	(vec)->count = 0; \
+	(vec)->data = (__typeof__((vec)->data))SMOL_ALLOC(sizeof(*((vec)->data))*(vec)->allocation); \
+} (void)0
+#endif 
+
+//smol_vector_push - Pushes an object into a vector
+//Arguments:
+// - vec -- The vector to be appended 
+// - value -- The element to be added
+#if defined(_MSC_VER)
+#define smol_vector_push(vec, value) { \
+	if((vec)->count >= (vec)->allocation) { \
+		(vec)->allocation *= 2; \
+		((void**)&(vec)->data)[0] = SMOL_REALLOC((vec)->data, sizeof(*((vec)->data)) * (vec)->allocation ); \
+	} \
+	SMOL_ASSERT((vec)->data); \
+	(vec)->data[(vec)->count++] = (value); \
+} (void)0
+#else 
+#define smol_vector_push(vec, value) { \
+	if((vec)->count >= (vec)->allocation) { \
+		(vec)->allocation *= 2; \
+		(vec)->data = (__typeof__((vec)->data))SMOL_REALLOC((vec)->data, sizeof(*((vec)->data)) * (vec)->allocation); \
+	} \
+	SMOL_ASSERT((vec)->data); \
+	(vec)->data[(vec)->count++] = (value); \
+} (void)0
+#endif 
+
+#if defined(_MSC_VER)
+#define smol_vector_resize(vec, size) { \
+	if(size > (vec)->allocation) { \
+		(vec)->allocation = ((size / (vec)->allocation)+1)*(vec)->allocation; \
+		((void**)&(vec)->data)[0] = SMOL_REALLOC((vec)->data, sizeof(*((vec)->data)) * (vec)->allocation); \
+	} \
+	(vec)->count = size; \
+} (void)0
+#else 
+#define smol_vector_resize(vec, size) { \
+	if(size > (vec)->allocation) { \
+		(vec)->allocation = ((size / (vec)->allocation)+1)*(vec)->allocation; \
+		(vec)->data = (__typeof__((vec)->data))SMOL_REALLOC((vec)->data, sizeof(*((vec)->data)) * (vec)->allocation); \
+	} \
+	(vec)->count = size; \
+} (void)0
+#endif 
+
+//smol_vector_pop - Pops the last object from the vector
+//Arguments: 
+// - vec -- The vector to be popped from
+//Returns type - containing the last object in the vector
+#define smol_vector_pop(vec) \
+	(vec)->data[--((vec)->count)]
+
+//smol_vector_front - Returns the front element of the vector
+// - vec -- The vector to get the first element from
+//Returns type - containing the first object in the vector
+#define smol_vector_front(vec) \
+	(vec)->data[0]
+
+//smol_vector_front - Returns the last element of the vector
+// - vec -- The vector to get the last element from
+//Returns type - containing the last object in the vector
+#define smol_vector_back(vec) \
+	(vec)->data[(vec)->count-1]
+
+//smol_vector_iterate - Iterates over vector elements
+//Arguments: 
+// - vec - The vector to be iterated over
+// - it - Variable name for the iterator
+//Returns: type* - Containing the buffer pointer to be indexed in
+#define smol_vector_iterate(vec, it) \
+	(vec)->data; \
+	SMOL_ASSERT((vec)->data); \
+	for(int it = 0; it < (vec)->count; it++)
+
+//smol_vector_each - Iterates over each element
+//Arguments:
+// - vec - The vector to be iterated over
+// - element_type - A type of individual element in the vector (MSVC doesn't have __typeof__ *sigh*)
+// - it - Iterator variable name
+#define smol_vector_each(vec, element_type, it) \
+	for(element_type* it = (vec)->data; (vec)->data && it != &((vec)->data[(vec)->count]); it++) 
+
+//smol_vector_clear - Clears the vector
+//Arguments: 
+// - vec -- The vector to be cleared
+#define smol_vector_clear(vec) { \
+	SMOL_ASSERT((vec)->data); \
+	((vec)->count = 0); \
+} (void)0
+
+//smol_vector_remove - Removes an element from the vector, by overwriting it with the last element, and decreasing vector size
+//Arguments: 
+// - vec -- The vector to remove element from
+// - element - The element index to be removed
+#define smol_vector_remove(vec, element) { \
+	SMOL_ASSERT((vec)->data); \
+	(vec)->data[element] = (vec)->data[--(vec)->count]; \
+} (void)0
+
+//smol_vector_count - "Returns" the number of elements in the vector
+//Arguments:
+// - vec -- The vector you want count of
+//Returns int - containing the number of elements in the vector
+#define smol_vector_count(vec) \
+	((vec)->count)
+
+//smol_vector_data - "Returns" the data buffer of the vector
+// - vector -- The span you want the data of
+//Returns type* - containing the pointer to the vector data
+#define smol_vector_data(vec) \
+	((vec)->data)
+
+//smol_span_at - "Returns" an element of the vector. NOT BOUNDS CHECKED.
+// - vec -- The vector you want the element of
+// - index -- The index of the element
+//Returns type - containing the element at index
+#define smol_vector_at(vec, index) \
+	((vec)->data[index])
+
+//Frees a vector, and sets it's allocation and count to zero
+#define smol_vector_free(vec) { \
+	if((vec)->data) { \
+		SMOL_FREE((void*)(vec)->data); \
+		(vec)->data = NULL; \
+	} \
+	(vec)->count = 0; \
+	(vec)->allocation = 0; \
+} (void)0
+
+//smol_vector_allocation - Retrieves vector allocation
+//Arguments:
+// - vec -- The vector you want alocation of
+//Returns: int - containing the number of elements allocated in the vector.
+#define smol_vector_allocation(vec) \
+	(vec)->allocation
+
+/* --------------- */
+/* Span like stuff */
+/* --------------- */
+
+//This macro can be used to define a span type, or for local variable similarily as smol_vector() macro works.
+#define smol_span(type) \
+struct { \
+	int count; \
+	type* data; \
+}
+
+//smol_span_init_from_slice - Initializes span from "span_like" object (vector for example)
+//Arguments:
+// - span -- The span you're initializing
+// - span_like -- The data you're basing this span on
+// - first_element -- Index of the first element
+// - element_count -- Number of elements this span should contain
+#define smol_span_init_from_slice(span, span_like, first_element, element_count) { \
+	(span)->count = (element_count); \
+	(span)->data = &((span_like)->data[first_element]); \
+} (void)0
+
+//smol_span_init_from_spanlike - Initializes span from "span_like" object (vector / span)
+//Arguments:
+// - span -- The span you're initializing
+// - span_like -- The data you're basing this span on
+#define smol_span_init_from_spanlike(span, span_like) { \
+	(span)->count = (span_like)->count; \
+	(span)->data = &((span_like)->data[0]); \
+} (void)0
+
+
+//smol_span_count - "Returns" the number of elements in the span
+//Arguments:
+// - span -- The span you want count of
+//Returns int - containing the number of elements in the span
+#define smol_span_count(span_like) \
+	((span_like)->count)
+
+//smol_span_data - "Returns" the data buffer of the span
+// - span -- The span you want the data of
+//Returns type* - containing the pointer to the span data
+#define smol_span_data(span_like) \
+	((span_like)->data)
+
+//smol_span_at - "Returns" an element of the span. NOT BOUNDS CHECKED.
+// - span -- The span you want the element of
+// - index -- The index of the element
+//Returns type - containing the element at index
+#define smol_span_at(span_like, index) \
+	((span_like)->data[index])
+
+/* ---------------------- */
+/*       QUEUE STUFF      */
+/* -----------------------*/
+
+
+#define smol_queue(type) \
+struct { \
+	int allocation; \
+	int first; \
+	int last; \
+	type* data; \
+}
+
+#define smol_queue_init(queue, initial_alloc) { \
+	(queue)->allocation = initial_alloc; \
+	(void*)((queue)->data) = SMOL_ALLOC(sizeof(*((queue)->data))*initial_alloc); \
+	(queue)->first = 0; \
+	(queue)->last = 0; \
+} (void)0
+
+#define smol_queue_free(queue) {\
+	if((queue)->data) SMOL_FREE((void*)((queue)->data)); \
+	(queue)->allocation = 0; \
+	(queue)->first = 0; \
+	(queue)->last = 0; \
+} (void)0
+
+#define smol_queue_clear(queue) \
+	((queue)->first = (queue)->last = 0)
+
+#define smol_queue_count(queue) \
+	((queue)->last - (queue)->first)
+
+#define smol_queue_push_back(queue, value) { \
+	if(smol_queue_count(queue) >= (queue)->allocation) { \
+		(queue)->allocation <<= 1; \
+		(void*)((queue)->data) = SMOL_REALLOC((void*)((queue)->data), sizeof(*((queue)->data))*(queue)->allocation); \
+	} \
+	(queue)->data[((queue)->allocation + (queue)->last++) % (queue)->allocation] = value; \
+} (void)0
+
+#define smol_queue_push_front(queue, value) { \
+	if(smol_queue_count(queue) >= (queue)->allocation) { \
+		(queue)->allocation <<= 1; \
+		(void*)((queue)->data) = SMOL_REALLOC((void*)((queue)->data), sizeof(*((queue)->data))*(queue)->allocation); \
+	} \
+	(queue)->data[((queue)->allocation + (queue)->first) % (queue)->allocation] = value; \
+} (void)0
+
+#define smol_queue_at(queue, index) \
+	((queue)->data[((queue)->allocation + (queue)->first + index)  % (queue)->allocation])
+
+#define smol_queue_pop_front(queue) {\
+	((queue)->data[((queue)->allocation + (queue)->first++) % (queue)->allocation]); \
+	if((queue)->first == (queue)->last) smol_queue_clear(queue); \
+} (void)0
+
+#define smol_queue_pop_back(queue) { \
+	((queue)->data[((queue)->allocation + --(queue)->last) % (queue)->allocation]); \
+	if((queue)->first == (queue)->last) smol_queue_clear(queue); \
+} (void)0
+
+#define smol_queue_front(queue) \
+	((queue)->data[((queue)->allocation + (queue)->first) % (queue)->allocation])
+
+#define smol_queue_back(queue) \
+	((queue)->data[((queue)->allocation + ((queue)->last - 1)) % (queue)->allocation])
 
 /* ------------------------------ */
 /* SOME FILE SYSTEM FUNCTIONALITY */
@@ -334,6 +685,12 @@ void* smol_read_entire_file(const char* file_path, smol_size_t* size);
 //smol_get_current_directory - Gets the current directory
 //Returns: const char* - A pointer to static variable within the function where current directory path is stored.
 const char* smol_get_current_directory(void);
+
+//smo_file_exists - Test does a given filepath exist.
+//Arguments:
+// - const char* file_path - A path to the file 
+//Returns int - containing 1 if file exists, 0 otherwise.
+int smol_file_exists(const char* file_path);
 
 //smol_change_directory - Changes current directory
 //Arguments:
@@ -531,9 +888,106 @@ int smol_utf8_to_utf16(const char* utf8, int buf_len, unsigned short* utf16) {
 
 #pragma endregion
 
+#pragma region Sorting utilities
+
+
+struct smol_cmp_swap_data_t { 
+	int element_size;
+	void* user_data;
+	smol_sort_proc* comparer;
+};
+
+void smol_quick_sort(void* array_data, int count, int(*compare)(void*, int, int, void*), void(*swap)(void*, int, int, void* user_data), void* user_data);
+
+void smol_swap_surrogate(void* data, int a, int b, void* user_data) {
+	int size = ((struct smol_cmp_swap_data_t*)user_data)->element_size;
+	char* data_ptr = (char*)data;
+#ifdef _MSC_VER
+	char* tmp = (char*)_malloca(size);
+#else 
+	char tmp[size];
+#endif 
+	memcpy(tmp, data_ptr + a*size, size);
+	memcpy(data_ptr + a*size, data_ptr + b*size, size);
+	memcpy(data_ptr + b*size, tmp, size);
+#ifdef _MSC_VER
+	_freea((void*)tmp);
+#endif 
+}
+
+int smol_compare_surrogate(void* data, int a, int b, void* user_data) {
+
+	struct smol_cmp_swap_data_t* cmp_swap_ptr = (struct smol_cmp_swap_data_t*)user_data;
+
+	void* user = cmp_swap_ptr->user_data;
+	int size = cmp_swap_ptr->element_size;
+	smol_sort_proc comparer = cmp_swap_ptr->comparer;
+	char* data_ptr = (char*)data;
+	return comparer(data_ptr + (a * size), data_ptr + (b * size), user);
+}
+
+void smol_sort(void* data, int num_elements, int element_size, smol_sort_proc compare, void* user_data) {
+
+	struct smol_cmp_swap_data_t cmp_swap;
+	cmp_swap.comparer = compare;
+	cmp_swap.element_size = element_size;
+	cmp_swap.user_data = user_data;
+	smol_quick_sort(data, num_elements, smol_compare_surrogate, smol_swap_surrogate, &cmp_swap);
+
+}
+
+
+void smol_quick_sort(void* array_data, int count, int(*compare)(void*, int, int, void*), void(*swap)(void*, int, int, void* user_data), void* user_data) {
+	if(count == 1) 
+		return;
+#ifdef _MSC_VER
+	int* stack = _malloca(count * sizeof(int));
+#else 
+	int stack[count];
+#endif 
+	int top = -1; // Initialize stack top
+
+	stack[++top] = 0;
+	stack[++top] = count-1;
+
+	while (top >= 0) {
+
+		int right = stack[top--];
+		int left = stack[top--];
+
+		int pivot = left;
+		int i;
+
+		for(i = left + 1; i <= right; i++) {
+			if(compare(array_data, i, left, user_data) < 0) {
+				pivot++;
+				swap(array_data, pivot, i, user_data);
+			}
+		}
+
+		swap(array_data, left, pivot, user_data);
+
+		if(pivot - 1 > left) {
+			stack[++top] = left;
+			stack[++top] = pivot - 1;
+		}
+		if(pivot + 1 < right) {
+			stack[++top] = pivot + 1;
+			stack[++top] = right;
+		}
+	}
+#ifdef _MSC_VER
+	_freea(stack);
+#endif 
+	return;
+
+} 
+ 
+#pragma endregion
+
 
 #pragma region Linear Congruential PRNG
-unsigned int smol__rand_state;
+static unsigned int smol__rand_state;
 
 void smol_randomize(unsigned int seed) {
 	smol__rand_state = seed;
@@ -587,16 +1041,46 @@ const char* smol_get_current_directory(void) {
 	
 	static char buffer[512] = { 0 };
 	
-	{
 #ifdef UNICODE 
+	{
 		wchar_t buf[512];
 		GetCurrentDirectory(512, buf);
 		BOOL subst = FALSE;
-		WideCharToMultiByte(CP_UTF8, MB_COMPOSITE, buf, lstrlenW(buf), buffer, 1024, "?", &subst);
-#endif 
+		WideCharToMultiByte(CP_UTF8, 0, buf, lstrlenW(buf), buffer, 1024, "?", &subst);
 	}
+#else 
+	GetCurrentDirectory(512, buffer);
+#endif 
 	
 	return buffer;
+
+}
+
+typedef BOOL(*smol_PathFileExistsW_proc)(LPWSTR lpwzStr);
+typedef BOOL(*smol_PathFileExistsA_proc)(LPCSTR lpzStr);
+
+smol_PathFileExistsW_proc smol__PathFileExistsW;
+smol_PathFileExistsA_proc smol__PathFileExistsA;
+
+int smol_file_exists(const char* file_path) {
+
+#ifdef UNICODE 
+	if(!smol__PathFileExistsW) {
+		HMODULE module = LoadLibrary(TEXT("shlwapi.dll"));
+		smol__PathFileExistsW = (smol_PathFileExistsW_proc)GetProcAddress(module, "PathFileExistsW");
+	}
+	{
+		wchar_t buf[512] = {0};
+		MultiByteToWideChar(CP_UTF8, 0, file_path, strlen(file_path), buf, sizeof(buf) / sizeof(*buf));
+		return smol__PathFileExistsW(buf) == TRUE;
+	}
+#else 
+	if(!smol__PathFileExistsA) {
+		HMODULE module = LoadLibrary(TEXT("shlwapi.dll"));
+		smol__PathFileExistsW = (smol_PathFileExistsA_proc)GetProcAddress(module, "PathFileExistsA");
+	}
+	return smol__PathFileExistsA(file_path) == TRUE;
+#endif 
 
 }
 
@@ -658,8 +1142,10 @@ void* smol_read_entire_file(const char* file_path, smol_size_t* size) {
 	HANDLE file = CreateFile(file_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 #endif 
 	
-	if(file == INVALID_HANDLE_VALUE) 
+	if(file == INVALID_HANDLE_VALUE) {
+		fprintf(stderr, "FILE '%s' NOT FOUND!\n", file_path);
 		return NULL;
+	}
 		
 	DWORD high = 0;
 	DWORD low = GetFileSize(file, &high);
@@ -696,6 +1182,10 @@ const char* smol_get_current_directory(void) {
 	static char buffer[512] = { 0 };
 	return getcwd(buffer, 512);
 
+}
+
+int smol_file_exists(const char* file_path) {
+	return access(file_path, F_OK) == 0;
 }
 
 int smol_change_directory(const char* directory) {
@@ -779,22 +1269,27 @@ void* smol_read_entire_file(const char* file_path, smol_size_t* size) {
 
 	void* buffer = NULL;
 
-	FILE* file = NULL;
-	if((file = fopen(file_path, "r")) != NULL) {
+	EM_ASM({
 		
-		fseek(file, 0, SEEK_END);
+		try {
+			var buffer = FS.readFile(UTF8ToString($0));
+		}
+		catch(e) {
+			console.log("Failed to open file: "+UTF8ToString($0)+"!");
+			Module.setValue($1, 0, 'i32');
+			Module.setValue($2, 0, 'i32');
+			return;
+		}
 		
-		smol_size_t size = ftell(file);
-		
-		fseek(file, 0, SEEK_SET);
-		
-		buffer = malloc(size+1);
-		fread((char*)buffer, 1, size, file);
+		var memory = Module._malloc(buffer.length+1);
+		var buf = new Uint8Array(Module.HEAPU8.buffer, memory, buffer.length);
+		buf.set(buffer);
+		Module.HEAPU8[memory + buffer.length] = 0;
 
-		fclose(file);
-		((char*)buffer)[size] = 0;
-	}
+		Module.setValue($1, memory, 'i32');
+		Module.setValue($2, buffer.length, 'i32');
 
+	}, file_path, &buffer, size);
 
 	return buffer;
 
@@ -833,7 +1328,12 @@ const char* smol_get_current_directory(void) {
 
 
 EM_JS(int, smol_change_directory, (const char* path), {
-	return FS.chdir(stringToUTF8(path));
+	return FS.chdir(UTF8ToString(path));
+})
+
+EM_JS(int, smol_file_exists, (const char* path), {
+	var result = FS.analyzePath(UTF8ToString(path));
+	return result.exists;
 })
 
 smol_file_scan_session_t smol_start_file_scan_session(smol_file_info_t* info) {

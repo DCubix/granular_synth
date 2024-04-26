@@ -5,10 +5,6 @@
 #include "smol_canvas.h"
 #include "smol_utils.h"
 
-#ifndef PXF_SMOL_FONT_16X16_WIDTH
-#include "smol_font_16x16.h"
-#endif
-
 // yoinked this from stackoverflow
 unsigned long hash(unsigned char* str);
 
@@ -43,7 +39,6 @@ typedef struct gui_t {
     int mouseClicked;
 
     smol_canvas_t* canvas;
-    smol_font_t font;
 } gui_t;
 
 typedef enum _gui_button_state {
@@ -51,6 +46,12 @@ typedef enum _gui_button_state {
     GUI_BUTTON_STATE_HOVERED,
     GUI_BUTTON_STATE_ACTIVE
 } gui_button_state;
+
+typedef enum _gui_drag_axis {
+    GUI_DRAG_AXIS_X = (1 << 0),
+    GUI_DRAG_AXIS_Y = (1 << 1),
+    GUI_DRAG_AXIS_XY = GUI_DRAG_AXIS_X | GUI_DRAG_AXIS_Y
+} gui_drag_axis;
 
 void gui_init(gui_t* gui, smol_canvas_t* canvas);
 void gui_begin(gui_t* gui);
@@ -63,6 +64,7 @@ int gui_is_mouse_down(gui_t* gui, widget_id_t wid);
 int gui_clickable_area(gui_t* gui, const char* id, rect_t bounds);
 int gui_xdrag_area(gui_t* gui, const char* id, rect_t bounds);
 int gui_ydrag_area(gui_t* gui, const char* id, rect_t bounds);
+int gui_draggable_area(gui_t* gui, const char* id, gui_drag_axis axis, rect_t bounds, int* outX, int* outY, double xStep, double yStep);
 
 void gui_draw_button(gui_t* gui, const char* text, gui_button_state buttonState, rect_t bounds);
 
@@ -166,16 +168,10 @@ void gui_init(gui_t* gui, smol_canvas_t* canvas) {
     gui->mouseClicked = 0;
     gui->mousePosition.x = 0;
     gui->mousePosition.y = 0;
-    gui->font = smol_create_font(
-        (char*)PXF_SMOL_FONT_16X16_DATA,
-        PXF_SMOL_FONT_16X16_WIDTH,
-        PXF_SMOL_FONT_16X16_HEIGHT,
-        (smol_font_hor_geometry_t*)PXF_SMOL_FONT_16X16_OFFSET_X_WIDTH
-    );
 }
 
 void gui_begin(gui_t* gui) {
-    gui->hoveredId = 0;
+    if (!gui->mouseClicked) gui->hoveredId = 0;
 }
 
 void gui_end(gui_t* gui) {
@@ -253,6 +249,32 @@ int gui_ydrag_area(gui_t* gui, const char* id, rect_t bounds) {
     return 0;
 }
 
+int gui_draggable_area(gui_t* gui, const char* id, gui_drag_axis axis, rect_t bounds, int* outX, int* outY, double xStep, double yStep) {
+    widget_id_t wid = hash(id);
+
+    if (rect_has_point(bounds, gui->mousePosition)) {
+        gui->hoveredId = wid;
+
+        if (gui->mouseClicked && gui->activeId == 0) {
+            gui->activeId = wid;
+        }
+    }
+
+    int result = 0;
+    if (gui_is_mouse_down(gui, wid)) {
+        if (axis & GUI_DRAG_AXIS_X == GUI_DRAG_AXIS_X) {
+            if (outX) *outX += gui->mouseDelta.x * xStep;
+            result = 1;
+        }
+        if (axis & GUI_DRAG_AXIS_Y == GUI_DRAG_AXIS_Y) {
+            if (outY) *outY += gui->mouseDelta.y * yStep;
+            result = 1;
+        }
+    }
+
+    return result;
+}
+
 void gui_draw_button(gui_t* gui, const char* text, gui_button_state buttonState, rect_t bounds) {
     smol_canvas_t* canvas = gui->canvas;
 
@@ -268,16 +290,19 @@ void gui_draw_button(gui_t* gui, const char* text, gui_button_state buttonState,
     smol_canvas_draw_rect(canvas, bounds.x, bounds.y, bounds.width, bounds.height);
 
     int w, h;
-    smol_text_size(gui->font, 1, text, &w, &h);
+    smol_text_size(canvas, 1, text, &w, &h);
+
+    smol_canvas_push_scissor(canvas);
+    smol_canvas_set_scissor(canvas, bounds.x, bounds.y, bounds.width, bounds.height);
 
     smol_canvas_draw_text(
         canvas,
         bounds.x + (bounds.width / 2 - w / 2),
-        bounds.y + (bounds.height / 2 - h / 2),
-        gui->font,
+        bounds.y + (bounds.height / 2 - h / 2) + 1,
         1,
         text
     );
+    smol_canvas_pop_scissor(canvas);
 
     smol_canvas_pop_color(canvas);
 }
@@ -364,13 +389,12 @@ static _spinner_result_t gui_spinner_base(
     smol_canvas_draw_rect(canvas, bounds.x, bounds.y, bounds.width, bounds.height);
 
     int w, h;
-    smol_text_size(gui->font, 1, valueText, &w, &h);
+    smol_text_size(canvas, 1, valueText, &w, &h);
 
     smol_canvas_draw_text(
         canvas,
         bounds.x + (bounds.width / 2 - w / 2),
         bounds.y + (bounds.height / 2 - h / 2) + 1,
-        gui->font,
         1,
         valueText
     );

@@ -127,10 +127,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="granular_synth.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="midi.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="granular_synth.h" />
     <ClInclude Include="gui.h" />
+    <ClInclude Include="midi.h" />
     <ClInclude Include="smol_audio.h" />
     <ClInclude Include="smol_canvas.h" />
     <ClInclude Include="smol_font_16x16.h" />

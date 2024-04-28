@@ -34,7 +34,9 @@ typedef struct adsr_t {
 	float decay;
 	float sustain;
 	float release;
-	float time, value;
+
+	double time;
+	float value;
 
 	enum {
 		ADSR_IDLE = 0,
@@ -56,33 +58,34 @@ typedef struct grain_t {
 	float pitch; // pitch factor, 1.0 = original pitch
 	float velocity; // velocity factor (note velocity), 1.0 = original velocity
 
-	float time;
+	double time;
 
 	float computed_amplitude;
 	float computed_pitch;
+	double computed_time;
 
-	curve_t amplitude_envelope;
+	float smoothness;
 
 	enum {
 		GRAIN_FORWARD = 0,
-		GRAIN_REVERSE
-	} direction;
+		GRAIN_REVERSE,
+		GRAIN_PINGPONG
+	} play_mode;
 
 	enum {
 		GRAIN_IDLE = 0,
-		GRAIN_PREPARE,
 		GRAIN_PLAYING,
-		GRAIN_NOTEOFF,
 		GRAIN_FINISHED
 	} state;
 } grain_t;
 
 void grain_init(grain_t* grain);
-void grain_set_smoothness(grain_t* grain, float smoothness);
-void grain_update(grain_t* grain);
-void grain_advance(grain_t* grain, float sample_rate);
-void grain_noteoff(grain_t* grain);
-void grain_free(grain_t* grain);
+void grain_update(grain_t* grain, float sample_rate);
+int grain_is_free(grain_t* grain);
+
+float grain_get_time_factor(grain_t* grain, float ntime);
+int grain_check_grain_end(grain_t* grain, float ntime);
+void grain_render_channel(grain_t* grain, smol_audiobuffer_t* buffer, int channel, float* out);
 
 typedef struct voice_t {
 	uint32_t id;
@@ -92,17 +95,22 @@ typedef struct voice_t {
 
 	struct {
 		int grains_per_second; // grains per second, min 1
-		float grain_size; // grain size in seconds
-		float grain_smoothness;
+		double size; // grain size in seconds
+		float smoothness;
+		double position; // grain position in seconds
 	} grain_settings;
 
 	struct {
 		float pitch;
 		float velocity;
-		float position;
 	} note_settings;
 
-	float grain_spawn_timer;
+	struct {
+		double size_random; // random size to add in seconds
+		float position_offset_random; // random offset in % of grain size
+	} random_settings;
+
+	double grain_spawn_timer;
 
 	enum {
 		VOICE_IDLE = 0,
@@ -131,11 +139,18 @@ typedef struct granular_synth_t {
 		int grains_per_second; // grains per second, min 1
 		float grain_smoothness;
 	} grain_settings;
+
+	struct {
+		double size_random; // random size to add in seconds
+		float position_offset_random; // random offset in % of grain size
+	} random_settings;
+
+	float tuning;
 } granular_synth_t;
 
 void granular_synth_init(granular_synth_t* synth, const char* sample_file);
 void granular_synth_render_channel(granular_synth_t* synth, int channel, float* out);
-void granular_synth_advance(granular_synth_t* synth, float sample_rate);
+void granular_synth_advance(granular_synth_t* synth);
 
 voice_t* granular_synth_get_free_voice(granular_synth_t* synth);
 
@@ -143,5 +158,8 @@ void granular_synth_noteon(granular_synth_t* synth, uint32_t id, float pitch, fl
 void granular_synth_noteoff(granular_synth_t* synth, uint32_t id);
 
 int granular_synth_active_voice_count(granular_synth_t* synth);
+
+typedef void (*granular_synth_voice_cb)(int, voice_t*, void*);
+void granular_synth_for_each_voice(granular_synth_t* synth, granular_synth_voice_cb callback, void* data);
 
 #endif // !GRANULAR_SYNTH_H

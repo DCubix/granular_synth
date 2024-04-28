@@ -13,7 +13,7 @@
 #define SMOL_AUDIO_IMPLEMENTATION
 #include "smol_audio.h"
 
-#include "smol_font_16x16.h"
+#include <SDL2/SDL.h>
 
 #define GUI_IMPL
 #include "gui.h"
@@ -46,6 +46,37 @@ void audio_callback(
 	}
 }
 
+//grain_t grain_test;
+//voice_t voice_test;
+
+void SDLCALL sdl_audio_callback(void* ud, Uint8* stream, int len) {
+	float* buffer = (float*)stream;
+	int num_samples = len / (sizeof(float) * 2);
+
+	for (int sample = 0; sample < num_samples; sample++) {
+		float left, right;
+		granular_synth_render_channel(&synth, 0, &left);
+		granular_synth_render_channel(&synth, 1, &right);
+
+		granular_synth_advance(&synth);
+		
+		// [GRAIN TEST]
+		//grain_render_channel(&grain_test, &synth.sample.buffer, 0, &left);
+		//grain_render_channel(&grain_test, &synth.sample.buffer, 1, &right);
+
+		//grain_update(&grain_test, synth.sample.buffer.sample_rate);
+
+		// [VOICE TEST]
+		/*voice_advance(&voice_test, synth.sample.buffer.sample_rate);
+
+		voice_render_channel(&voice_test, &synth.sample.buffer, 0, &left);
+		voice_render_channel(&voice_test, &synth.sample.buffer, 1, &right);*/
+
+		*buffer++ = left;
+		*buffer++ = right;
+	}
+}
+
 double pixel_pos_to_sample_pos(int pixelPos, int maxPixels, const smol_audiobuffer_t* buffer) {
 	double relativePos = (double)pixelPos / (maxPixels - 1);
 	return relativePos * ((double)buffer->num_frames / buffer->sample_rate);
@@ -63,6 +94,8 @@ void draw_waveform(
 	const int halfH = bounds.height / 2;
 	const int midY = bounds.y + halfH;
 	smol_u32 samplesPerPixel = buffer->num_frames / bounds.width;
+	
+	smol_canvas_push_color(canvas);
 
 	smol_u32 sampleNo = 0;
 	for (int ox = 0; ox < bounds.width; ox++) {
@@ -85,16 +118,14 @@ void draw_waveform(
 		sampleRMS = sqrtf(sampleRMS / samplesPerPixel);
 		sampleAvg = (sampleAvg * 2.0f) / samplesPerPixel;
 
-		smol_canvas_push_color(canvas);
-
 		smol_canvas_set_color(canvas, smol_rgba(0, 140, 40, 255));
 		smol_canvas_draw_line(canvas, bounds.x + ox, midY - sampleAvg * halfH, bounds.x + ox, midY + sampleAvg * halfH);
 
 		smol_canvas_lighten_color(canvas, 95);
 		smol_canvas_draw_line(canvas, bounds.x + ox, midY - sampleRMS * halfH, bounds.x + ox, midY + sampleRMS * halfH);
-
-		smol_canvas_pop_color(canvas);
+		
 	}
+	smol_canvas_pop_color(canvas);
 
 	smol_canvas_push_color(canvas);
 	smol_canvas_set_color(canvas, SMOLC_LIGHT_GREY);
@@ -102,23 +133,24 @@ void draw_waveform(
 	smol_canvas_pop_color(canvas);
 }
 
-void draw_grain(smol_canvas_t* canvas, grain_t* grain, const smol_audiobuffer_t* buffer, rect_t bounds) {
+void draw_grain(smol_canvas_t* canvas, voice_t* voice, grain_t* grain, const smol_audiobuffer_t* buffer, rect_t bounds) {
 	if (grain->state == GRAIN_IDLE || grain->state == GRAIN_FINISHED) return;
 
-	const int halfH = bounds.height / 2;
-	const int midY = bounds.y + halfH;
 	const smol_u32 samplesPerPixel = buffer->num_frames / bounds.width;
 
-	int grainSamplePos = grain->time * buffer->sample_rate;
-	int xPosOffset = grain->position / samplesPerPixel;
-
-	xPosOffset += grainSamplePos / samplesPerPixel;
+	int grainSamplePos = (grain->computed_time + grain->position) * buffer->sample_rate;
+	int xPosOffset = grainSamplePos / samplesPerPixel;
 
 	smol_canvas_push_color(canvas);
+
 	smol_canvas_set_color(canvas, SMOLC_WHITE);
-	smol_canvas_draw_line(canvas, bounds.x + xPosOffset, midY - halfH, bounds.x + xPosOffset, midY + halfH);
-	smol_canvas_fill_circle(canvas, bounds.x + xPosOffset, midY - halfH, 3);
-	smol_canvas_fill_circle(canvas, bounds.x + xPosOffset, midY + halfH, 3);
+	smol_canvas_draw_line(canvas, bounds.x + xPosOffset, bounds.y, bounds.x + xPosOffset, bounds.y + bounds.height-1);
+
+	int h = bounds.height * grain->computed_amplitude * voice->amplitude_envelope.value;
+
+	smol_canvas_set_color(canvas, SMOLC_SKYBLUE);
+	smol_canvas_fill_rect(canvas, bounds.x + xPosOffset - 2, bounds.y + (bounds.height - h), 4, h);
+
 	smol_canvas_pop_color(canvas);
 }
 
@@ -168,11 +200,12 @@ void draw_curve(smol_canvas_t* canvas, curve_t* curve, rect_t bounds) {
 }
 
 float pitch_from_midi(int note) {
+	// note should start at C
+	note -= 3;
 	return powf(2.0f, (note - 69) / 12.0f);
 }
 
 void midi_callback(midi_message_t msg) {
-	printf("MIDI: %d %d %d\n", msg.status, msg.data1, msg.data2);
 	if (msg.status == MIDI_NOTE_ON) {
 		granular_synth_noteon(
 			&synth,
@@ -185,25 +218,76 @@ void midi_callback(midi_message_t msg) {
 	}
 }
 
+void draw_grain_info(int id, voice_t* voice, void* data) {
+	smol_canvas_t* canvas = (smol_canvas_t*)data;
+
+	// black background
+	//smol_canvas_push_blend(canvas);
+	smol_canvas_push_color(canvas);
+	//smol_canvas_set_blend(canvas, smol_pixel_blend_mix);
+	smol_canvas_set_color(canvas, smol_rgba(0, 0, 0, 120));
+	smol_canvas_fill_rect(canvas, id * 100, 0, 100, 640);
+
+	smol_canvas_set_color(canvas, SMOLC_WHITE);
+
+	for (int i = 0; i < GS_VOICE_MAX_GRAINS; i++) {
+		grain_t* grain = &voice->grains[i];
+
+		int x = 10 + id * 100;
+		int y = 10 + i * 18;
+
+		char state = 'I';
+		switch (grain->state) {
+			case GRAIN_IDLE: state = 'I'; break;
+			case GRAIN_FINISHED: state = 'F'; break;
+			case GRAIN_PLAYING: state = '>'; break;
+		}
+		smol_canvas_draw_text_formated(canvas, x, y, 1, "G%d: %c%.1f", i, state, grain->time);
+	}
+
+	smol_canvas_pop_color(canvas);
+	//smol_canvas_pop_blend(canvas);
+}
+
 int main() {
 	midi_in_device_t* midi = NULL;
+	
+	SDL_Init(SDL_INIT_AUDIO);
+
+	SDL_AudioSpec want;
+	SDL_AudioSpec have;
+	SDL_AudioDeviceID device;
+
+	SDL_zero(want);
+	want.freq = SAMPLE_RATE;
+	want.format = AUDIO_F32;
+	want.channels = 2;
+	want.samples = 4096;
+	want.callback = sdl_audio_callback;
 
 	if (!smol_file_exists("config.txt")) {
 		printf("Available audio devices:\n");
-		int deviceCount;
-		smol_audio_device_t* devices = smol_enumerate_audio_devices(0, &deviceCount);
-		for (int i = 0; i < deviceCount; i++) {
-			printf("%d) %s\n", i, devices[i].name);
+		
+		//smol_audio_device_t* devices = smol_enumerate_audio_devices(0, &playback_device_count);
+		for (int i = 0; i < SDL_GetNumAudioDevices(0); i++) {
+			printf("%d) %s\n", i, SDL_GetAudioDeviceName(i, 0));
 		}
 		printf("Select a device: ");
 
-		int audio_device = -1;
+		int audio_device = 0;
 		scanf("%d", &audio_device);
 
-		smol_audio_playback_init(SAMPLE_RATE, 2, audio_device);
-		smol_audio_set_playback_callback(audio_callback, NULL);
+		//smol_audio_playback_init(SAMPLE_RATE, 2, audio_device);
+		//smol_audio_set_playback_callback(audio_callback, NULL);
+		
+		// open audio device
+		device = SDL_OpenAudioDevice(SDL_GetAudioDeviceName(audio_device, 0), 0, &want, &have, 0);
+		if (device == 0) {
+			fprintf(stderr, "Failed to open audio device\n");
+			return 1;
+		}
 
-		// midi
+		// open midi device
 		int midi_devices = midi_get_device_count();
 		printf("Available MIDI devices:\n");
 		for (int i = 0; i < midi_devices; i++) {
@@ -214,12 +298,12 @@ int main() {
 		printf("Select a device: ");
 
 		int midi_device = -1;
-		scanf("%d", &midi_device);
-
-		midi_in_device_t* midi = midi_open_device(midi_device, midi_callback);
-		if (!midi) {
-			fprintf(stderr, "Failed to open MIDI device\n");
-			return 1;
+		if (scanf("%d", &midi_device) > 0 && midi_device >= 0) {
+			midi = midi_open_device(midi_device, midi_callback);
+			if (!midi) {
+				fprintf(stderr, "Failed to open MIDI device\n");
+				return 1;
+			}
 		}
 
 		FILE* fp = fopen("config.txt", "w");
@@ -227,7 +311,7 @@ int main() {
 		fclose(fp);
 	} else {
 		// audio device index (first byte)
-		int audio_device = -1;
+		int audio_device = 0;
 		// midi device index (second byte)
 		int midi_device = 0;
 		
@@ -235,24 +319,54 @@ int main() {
 		fscanf(fp, "%d %d", &audio_device, &midi_device);
 		fclose(fp);
 
-		Sleep(5000);
-
-		smol_audio_playback_init(SAMPLE_RATE, 2, audio_device);
-		smol_audio_set_playback_callback(audio_callback, NULL);
-
-		Sleep(1000);
-
-		midi_open_device(midi_device, midi_callback);
-		if (!midi) {
-			fprintf(stderr, "Failed to open MIDI device\n");
+		device = SDL_OpenAudioDevice(SDL_GetAudioDeviceName(audio_device, 0), 0, &want, &have, 0);
+		if (device == 0) {
+			fprintf(stderr, "Failed to open audio device\n");
 			return 1;
+		}
+
+		if (midi_device >= 0) {
+			midi = midi_open_device(midi_device, midi_callback);
+			if (!midi) {
+				fprintf(stderr, "Failed to open MIDI device\n");
+				return 1;
+			}
 		}
 	}
 
-	granular_synth_init(&synth, "pad2.wav");
-	synth.sample.window_start = 0.1;
-	synth.sample.window_end = 1.0;
-	synth.grain_settings.grains_per_second = 2;
+	// print audio device info (have)
+	printf("Audio device info:\n");
+	printf("freq: %d\n", have.freq);
+	printf("format: %d\n", have.format);
+	printf("channels: %d\n", have.channels);
+	printf("samples: %d\n", have.samples);
+
+	SDL_PauseAudioDevice(device, 0);
+
+	granular_synth_init(&synth, "aaa.wav");
+	synth.sample.window_start = 1.0;
+	synth.sample.window_end = synth.sample.window_start + 2.0;
+	synth.grain_settings.grains_per_second = 4;
+	synth.grain_settings.grain_smoothness = 1.0f;
+	synth.random_settings.position_offset_random = 0.1f;
+	synth.random_settings.size_random = 0.1f;
+
+	//grain_init(&grain_test);
+	//grain_test.pitch = 1.0f;
+	//grain_test.velocity = 1.0f;
+	//grain_test.position = 0.0f;
+	//grain_test.size = 0.5f; // seconds
+	//grain_test.state = GRAIN_PLAYING;
+	//grain_test.play_mode = GRAIN_PINGPONG;
+
+	//voice_init(&voice_test);
+	//voice_test.note_settings.pitch = 1.0f;
+	//voice_test.note_settings.velocity = 1.0f;
+	//voice_test.grain_settings.position = 0.0f;
+	//voice_test.grain_settings.grains_per_second = 8;
+	//voice_test.grain_settings.size = 0.5f;
+	//voice_test.grain_settings.smoothness = 1.0f;
+	//voice_gate(&voice_test, 1);
 
 	smol_frame_config_t frameConf;
 	memset(&frameConf, 0, sizeof(smol_frame_config_t));
@@ -297,36 +411,40 @@ int main() {
 			}
 		}
 
-		rectcut_t root = { 0, 0, frame->width, frame->height };
+		rect_t root = { 0, 0, frame->width, frame->height };
 		rectcut_expand(&root, -5);
 
-		rectcut_t top = rectcut_top(&root, 30);
+		rect_t toolBar = rectcut_top(&root, 30);
 
-		root.miny += 5;
+		root.y += 5;
+		root.height -= 10;
 
-		rectcut_t leftRightCh = root;
-		rectcut_t leftCh = rectcut_top(&root, (root.maxy - root.miny) / 2);
-		rectcut_t rightCh = root;
-
-		rect_t rectLeftCh = torect(leftCh);
-		rect_t rectRightCh = torect(rightCh);
-		rect_t rectLeftRightCh = torect(leftRightCh);
+		rect_t waveView = rectcut_top(&root, 256);
+		rect_t wvFull = waveView;
+		rect_t wvLeft = rectcut_top(&waveView, waveView.height / 2);
+		rect_t wvRight = waveView;
 
 		smol_canvas_clear(&canvas, SMOLC_DARKEST_GREY);
 
-		draw_waveform(&canvas, rectLeftCh, &synth.sample.buffer, 0);
-		draw_waveform(&canvas, rectRightCh, &synth.sample.buffer, 1);
+		draw_waveform(&canvas, wvLeft, &synth.sample.buffer, 0);
+		draw_waveform(&canvas, wvRight, &synth.sample.buffer, 1);
 
-		int voice_count = granular_synth_active_voice_count(&synth);
-		smol_u32 samplerPerPixel = synth.sample.buffer.num_frames / rectLeftRightCh.width;
-		for (int id = 0; id < voice_count; id++) {
-			draw_grain(&canvas, &synth.voices[id], &synth.sample.buffer, rectLeftRightCh);
+		smol_u32 samplerPerPixel = synth.sample.buffer.num_frames / waveView.width;
+
+		for (int i = 0; i < GS_SYNTH_MAX_VOICES; i++) {
+			voice_t* voice = &synth.voices[i];
+			if (voice_is_free(voice)) continue;
+
+			for (int j = 0; j < GS_VOICE_MAX_GRAINS; j++) {
+				grain_t* grain = &voice->grains[j];
+				if (grain_is_free(grain)) continue;
+
+				draw_grain(&canvas, voice, grain, &synth.sample.buffer, wvFull);
+			}
 		}
 
-		draw_guide(&canvas, "LS", &synth.sample.buffer, synth.sample.window_start, rectLeftRightCh);
-		draw_guide(&canvas, "LE", &synth.sample.buffer, synth.sample.window_end, rectLeftRightCh);
-
-		//draw_curve(&canvas, &curve_test, torect(root));
+		draw_guide(&canvas, "LS", &synth.sample.buffer, synth.sample.window_start, wvFull);
+		draw_guide(&canvas, "LE", &synth.sample.buffer, synth.sample.window_end, wvFull);
 
 		gui_begin(&gui);
 
@@ -335,16 +453,16 @@ int main() {
 
 		double maxTime = (double)(synth.sample.buffer.num_frames - 1) / synth.sample.buffer.sample_rate;
 
-		rectcut_t sampleEndRect = rectcut_right(&top, 150);
-		if (gui_spinnerd(&gui, "sampleEnd", torect(sampleEndRect), &endTime, 0.0, maxTime, 0.05, "end: %.2fs")) {
+		rect_t sampleEndRect = rectcut_right(&toolBar, 150);
+		if (gui_spinnerd(&gui, "sampleEnd", sampleEndRect, &endTime, 0.0, maxTime, 0.05, "end: %.2fs")) {
 			synth.sample.window_end = endTime;
 			if (synth.sample.window_end <= synth.sample.window_start) {
 				synth.sample.window_end = synth.sample.window_start + 0.001;
 			}
 		}
 
-		rectcut_t sampleStartRect = rectcut_right(&top, 150);
-		if (gui_spinnerd(&gui, "sampleStart", torect(sampleStartRect), &startTime, 0.0, endTime, 0.05, "start: %.2fs")) {
+		rect_t sampleStartRect = rectcut_right(&toolBar, 150);
+		if (gui_spinnerd(&gui, "sampleStart", sampleStartRect, &startTime, 0.0, endTime, 0.05, "start: %.2fs")) {
 			synth.sample.window_start = startTime;
 			if (synth.sample.window_start >= synth.sample.window_end) {
 				synth.sample.window_start = synth.sample.window_end - 0.001;
@@ -352,29 +470,26 @@ int main() {
 			}
 		}
 
-		rect_t endRect = rect(
-			sample_pos_to_pixel_pos(synth.sample.window_end, rectLeftRightCh.width, &synth.sample.buffer) - 10,
-			rectLeftRightCh.y,
-			20,
-			rectLeftRightCh.height
-		);
-		if (gui_draggable_area(&gui, "dragEnd", GUI_DRAG_AXIS_X, endRect, &synth.sample.window_end, NULL, synth.sample.buffer.num_frames / rectLeftRightCh.width, 0.0)) {
-			synth.sample.window_end = min(max(synth.sample.window_end, 0.0), synth.sample.buffer.duration);
-			endTime = synth.sample.window_end;
-		}
-
-		rect_t startRect = rect(
-			sample_pos_to_pixel_pos(synth.sample.window_start, rectLeftRightCh.width, &synth.sample.buffer) - 10,
-			rectLeftRightCh.y,
-			20,
-			rectLeftRightCh.height
-		);
-		if (gui_draggable_area(&gui, "dragStart", GUI_DRAG_AXIS_X, startRect, &synth.sample.window_start, NULL, synth.sample.buffer.num_frames / rectLeftRightCh.width, 0.0)) {
-			synth.sample.window_start = min(max(synth.sample.window_start, 0.0), synth.sample.window_end - 0.001);
-			startTime = synth.sample.window_start;
+		rect_t tuningRect = rectcut_right(&toolBar, 150);
+		if (gui_spinnerf(&gui, "tuning", tuningRect, &synth.tuning, -2.0, 2.0, 0.01, "tuning: %.2f")) {
+			
 		}
 
 		gui_end(&gui);
+
+		//granular_synth_for_each_voice(&synth, draw_grain_info, &canvas);
+		//draw_grain_info(0, &voice_test, &canvas);
+
+		//smol_canvas_push_color(&canvas);
+		//smol_canvas_set_color(&canvas, SMOLC_WHITE);
+		//char state = 'I';
+		//switch (grain_test.state) {
+		//	case GRAIN_IDLE: state = 'I'; break;
+		//	case GRAIN_FINISHED: state = 'F'; break;
+		//	case GRAIN_PLAYING: state = '>'; break;
+		//}
+		//smol_canvas_draw_text_formated(&canvas, 10, 10, 2, "GT: %c%.1f", state, grain_test.time);
+		//smol_canvas_pop_color(&canvas);
 
 		smol_canvas_present(&canvas, frame);
 	}
@@ -383,7 +498,10 @@ int main() {
 		midi_close_device(midi);
 	}
 
-	smol_audio_shutdown();
+	SDL_CloseAudioDevice(device);
+	SDL_Quit();
+
+	//smol_audio_shutdown();
 	smol_frame_destroy(frame);
 
 	return 0;

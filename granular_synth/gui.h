@@ -22,15 +22,11 @@ typedef struct rect_t {
 
 int rect_has_point(rect_t rect, point_t point);
 
-typedef struct rectcut_t {
-    int minx, miny, maxx, maxy;
-} rectcut_t;
-
-rectcut_t rectcut_left(rectcut_t* rect, int a);
-rectcut_t rectcut_right(rectcut_t* rect, int a);
-rectcut_t rectcut_top(rectcut_t* rect, int a);
-rectcut_t rectcut_bottom(rectcut_t* rect, int a);
-void rectcut_expand(rectcut_t* rect, int a);
+rect_t rectcut_left(rect_t* rect, int a);
+rect_t rectcut_right(rect_t* rect, int a);
+rect_t rectcut_top(rect_t* rect, int a);
+rect_t rectcut_bottom(rect_t* rect, int a);
+void rectcut_expand(rect_t* rect, int a);
 
 typedef struct gui_t {
     widget_id_t activeId, hoveredId;
@@ -130,35 +126,39 @@ int rect_has_point(rect_t rect, point_t point) {
         point.y <= rect.y + rect.height;
 }
 
-rectcut_t rectcut_left(rectcut_t* rect, int a) {
-    int minx = rect->minx;
-    rect->minx = min(rect->maxx, rect->minx + a);
-    return (rectcut_t) { minx, rect->miny, rect->minx, rect->maxy };
+rect_t rectcut_left(rect_t* rect, int a) {
+    rect_t tmp = *rect;
+    rect->x += a;
+    rect->width -= a;
+    if (rect->width < 0) rect->width = 0;
+    return (rect_t) { tmp.x, tmp.y, a, tmp.height };
 }
 
-rectcut_t rectcut_right(rectcut_t* rect, int a) {
-    int maxx = rect->maxx;
-    rect->maxx = max(rect->minx, rect->maxx - a);
-    return (rectcut_t) { rect->maxx, rect->miny, maxx, rect->maxy };
+rect_t rectcut_right(rect_t* rect, int a) {
+    rect->width -= a;
+    if (rect->width < 0) rect->width = 0;
+    return (rect_t) { rect->x + rect->width, rect->y, a, rect->height };
 }
 
-rectcut_t rectcut_top(rectcut_t* rect, int a) {
-    int miny = rect->miny;
-    rect->miny = min(rect->maxy, rect->miny + a);
-    return (rectcut_t) { rect->minx, miny, rect->maxx, rect->miny };
+rect_t rectcut_top(rect_t* rect, int a) {
+    rect_t tmp = *rect;
+	rect->y += a;
+	rect->height -= a;
+	if (rect->height < 0) rect->height = 0;
+	return (rect_t) { tmp.x, tmp.y, tmp.width, a };
 }
 
-rectcut_t rectcut_bottom(rectcut_t* rect, int a) {
-    int maxy = rect->maxy;
-    rect->maxy = max(rect->miny, rect->maxy - a);
-    return (rectcut_t) { rect->minx, rect->maxy, rect->maxx, maxy };
+rect_t rectcut_bottom(rect_t* rect, int a) {
+    rect->height -= a;
+	if (rect->height < 0) rect->height = 0;
+	return (rect_t) { rect->x, rect->y + rect->height, rect->width, a };
 }
 
-void rectcut_expand(rectcut_t* rect, int a) {
-    rect->minx -= a;
-    rect->miny -= a;
-    rect->maxx += a;
-    rect->maxy += a;
+void rectcut_expand(rect_t* rect, int a) {
+    rect->x -= a;
+	rect->y -= a;
+	rect->width += a * 2;
+	rect->height += a * 2;
 }
 
 void gui_init(gui_t* gui, smol_canvas_t* canvas) {
@@ -373,13 +373,11 @@ static _spinner_result_t gui_spinner_base(
     smol_canvas_t* canvas = gui->canvas;
     widget_id_t wid = hash(id);
 
-    rectcut_t root = fromrect(bounds);
-    rectcut_t buttonRect = rectcut_right(&root, buttonWidth);
+    rect_t root = bounds;
+    rect_t buttonRect = rectcut_right(&root, buttonWidth);
 
-    bounds = torect(root);
-
-    rectcut_t topButton = rectcut_top(&buttonRect, bounds.height / 2);
-    rectcut_t botButton = buttonRect;
+    rect_t topButton = rectcut_top(&buttonRect, bounds.height / 2);
+    rect_t botButton = buttonRect;
 
     smol_canvas_push_color(canvas);
 
@@ -405,19 +403,16 @@ static _spinner_result_t gui_spinner_base(
     sprintf(decId, "%s$$dec", id);
     sprintf(incId, "%s$$inc", id);
 
-    rect_t incBounds = torect(topButton);
-    rect_t decBounds = torect(botButton);
-
-    int resultInc = gui_clickable_area(gui, incId, incBounds);
-    int resultDec = gui_clickable_area(gui, decId, decBounds);
+    int resultInc = gui_clickable_area(gui, incId, topButton);
+    int resultDec = gui_clickable_area(gui, decId, botButton);
     int delta = gui_xdrag_area(gui, id, bounds);
 
-    gui_draw_button(gui, "-", gui_button_state_from_gui(gui, decId), decBounds);
-    gui_draw_button(gui, "+", gui_button_state_from_gui(gui, incId), incBounds);
+    gui_draw_button(gui, "-", gui_button_state_from_gui(gui, decId), botButton);
+    gui_draw_button(gui, "+", gui_button_state_from_gui(gui, incId), topButton);
 
     return (_spinner_result_t) {
         resultDec, resultInc, delta,
-        decBounds, incBounds,
+        botButton, topButton,
         decId, incId
     };
 }

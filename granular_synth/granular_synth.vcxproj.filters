@@ -24,6 +24,18 @@
     <ClCompile Include="midi.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="sndfilter\biquad.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sndfilter\snd.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sndfilter\mem.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sndfilter\reverb.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="smol_audio.h">
@@ -54,6 +66,18 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="miniaudio.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sndfilter\biquad.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sndfilter\snd.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sndfilter\mem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sndfilter\reverb.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

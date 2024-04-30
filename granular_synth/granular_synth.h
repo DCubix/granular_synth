@@ -5,11 +5,14 @@
 #include "smol_utils.h"
 #include "smol_audio.h"
 
+#include "sndfilter/reverb.h"
+
 #define GS_ENVELOPE_MAX_POINTS 64
 #define GS_ENVELOPE_MAX_SLOPES (GS_ENVELOPE_MAX_POINTS / 2)
 
 #define GS_VOICE_MAX_GRAINS 32
 #define GS_SYNTH_MAX_VOICES 8
+#define GS_FILTER_MAX_STAGES 4
 
 typedef struct curve_point_t {
 	float value, slope;
@@ -87,6 +90,36 @@ float grain_get_time_factor(grain_t* grain, float ntime);
 int grain_check_grain_end(grain_t* grain, float ntime);
 void grain_render_channel(grain_t* grain, smol_audiobuffer_t* buffer, int channel, float* out);
 
+typedef struct filter_t filter_t;
+
+typedef float (*filter_process_cb)(filter_t* filter, float input, float amount);
+typedef struct filter_t {
+	void* params;
+	filter_process_cb process;
+
+	double inv_sample_rate;
+
+	float previous_output;
+} filter_t;
+
+float filter_init(filter_t* filter, int sample_rate);
+float filter_process(filter_t* filter, float input, float amount);
+
+// [FILTER TYPES]
+typedef struct filter_lowpass_params_t {
+	float cutoff;
+} filter_lowpass_params_t;
+
+void filter_lowpass_init(filter_t* filter, int sample_rate, filter_lowpass_params_t* params);
+//
+
+typedef enum granular_synth_play_mode {
+	GS_PLAY_FORWARD = 0,
+	GS_PLAY_REVERSE,
+	GS_PLAY_PINGPONG,
+	GS_PLAY_RANDOM_BACK_AND_FORTH
+} granular_synth_play_mode;
+
 typedef struct voice_t {
 	uint32_t id;
 
@@ -98,6 +131,7 @@ typedef struct voice_t {
 		double size; // grain size in seconds
 		float smoothness;
 		double position; // grain position in seconds
+		granular_synth_play_mode play_mode;
 	} grain_settings;
 
 	struct {
@@ -116,9 +150,13 @@ typedef struct voice_t {
 		VOICE_IDLE = 0,
 		VOICE_GATE
 	} state;
+
+	filter_lowpass_params_t lowpass_filter_params;
+	filter_t lowpass_filter[2];
+	adsr_t lowpass_filter_envelope;
 } voice_t;
 
-void voice_init(voice_t* voice);
+void voice_init(voice_t* voice, int sample_rate);
 grain_t* voice_get_free_grain(voice_t* voice);
 void voice_spawn_grain(voice_t* voice);
 int voice_is_free(voice_t* voice);
@@ -138,6 +176,7 @@ typedef struct granular_synth_t {
 	struct {
 		int grains_per_second; // grains per second, min 1
 		float grain_smoothness;
+		granular_synth_play_mode play_mode;
 	} grain_settings;
 
 	struct {
@@ -146,9 +185,11 @@ typedef struct granular_synth_t {
 	} random_settings;
 
 	float tuning;
+
+	sf_reverb_state_st reverb_filter;
 } granular_synth_t;
 
-void granular_synth_init(granular_synth_t* synth, const char* sample_file);
+void granular_synth_init(granular_synth_t* synth, int sample_rate, const char* sample_file);
 void granular_synth_render_channel(granular_synth_t* synth, int channel, float* out);
 void granular_synth_advance(granular_synth_t* synth);
 

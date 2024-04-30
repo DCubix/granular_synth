@@ -26,6 +26,7 @@
 #define SAMPLE_RATE (44100)
 
 granular_synth_t synth;
+filter_lowpass_params_t lowpass_params;
 
 void audio_callback(
 	int num_input_channels,
@@ -205,16 +206,50 @@ float pitch_from_midi(int note) {
 	return powf(2.0f, (note - 69) / 12.0f);
 }
 
+int sustain = 0;
+smol_vector(uint32_t) notes = { 0, 0, 0 };
+
 void midi_callback(midi_message_t msg) {
-	if (msg.status == MIDI_NOTE_ON) {
-		granular_synth_noteon(
-			&synth,
-			msg.note.pitch,
-			pitch_from_midi(msg.note.pitch),
-			(float)msg.note.velocity / 127.0f
-		);
-	} else if (msg.status == MIDI_NOTE_OFF) {
-		granular_synth_noteoff(&synth, msg.note.pitch);
+	switch (msg.status) {
+		case MIDI_NOTE_ON: {
+			if (sustain) {
+				int has_note = 0;
+				for (int i = 0; i < smol_vector_count(&notes); i++) {
+					if (smol_vector_at(&notes, i) == msg.note.pitch) {
+						has_note = 1;
+						break;
+					}
+				}
+
+				if (!has_note) smol_vector_push(&notes, msg.note.pitch);
+			}
+			granular_synth_noteon(
+				&synth,
+				msg.note.pitch,
+				pitch_from_midi(msg.note.pitch),
+				(float)msg.note.velocity / 127.0f
+			);
+		} break;
+		case MIDI_NOTE_OFF: {
+			if (!sustain) {
+				granular_synth_noteoff(&synth, msg.note.pitch);
+			}
+		} break;
+		case MIDI_CONTROL_CHANGE: {
+			if (msg.control_change.controller == 64) {
+				sustain = msg.control_change.value > 63;
+				if (!sustain) {
+					for (int i = 0; i < smol_vector_count(&notes); i++) {
+						granular_synth_noteoff(&synth, smol_vector_at(&notes, i));
+					}
+				}
+				else {
+					if (!notes.allocation) {
+						smol_vector_init(&notes, 32);
+					}
+				}
+			}
+		} break;
 	}
 }
 
@@ -343,13 +378,14 @@ int main() {
 
 	SDL_PauseAudioDevice(device, 0);
 
-	granular_synth_init(&synth, "aaa.wav");
-	synth.sample.window_start = 1.0;
-	synth.sample.window_end = synth.sample.window_start + 2.0;
+	granular_synth_init(&synth, SAMPLE_RATE, "piano.wav");
+	synth.sample.window_start = 0.0;
+	synth.sample.window_end = synth.sample.window_start + 0.5;
 	synth.grain_settings.grains_per_second = 4;
-	synth.grain_settings.grain_smoothness = 1.0f;
-	synth.random_settings.position_offset_random = 0.1f;
-	synth.random_settings.size_random = 0.1f;
+	synth.grain_settings.grain_smoothness = 0.01f;
+	synth.grain_settings.play_mode = GS_PLAY_PINGPONG;
+	synth.random_settings.position_offset_random = 0.0f;
+	synth.random_settings.size_random = 0.0f;
 
 	//grain_init(&grain_test);
 	//grain_test.pitch = 1.0f;
@@ -394,7 +430,7 @@ int main() {
 		clock += time;
 
 		smol_frame_update(frame);
-		
+
 		SMOL_FRAME_EVENT_LOOP(frame, ev) {
 			if (ev.type == SMOL_FRAME_EVENT_MOUSE_BUTTON_UP) {
 				gui_input_mouse_click(&gui, SMOL_FALSE);
@@ -489,7 +525,7 @@ int main() {
 		//	case GRAIN_PLAYING: state = '>'; break;
 		//}
 		//smol_canvas_draw_text_formated(&canvas, 10, 10, 2, "GT: %c%.1f", state, grain_test.time);
-		//smol_canvas_pop_color(&canvas);
+		//smol_canvas_pop_color(&canvas)
 
 		smol_canvas_present(&canvas, frame);
 	}

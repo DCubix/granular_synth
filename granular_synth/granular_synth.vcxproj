@@ -78,6 +78,7 @@
       <ConformanceMode>true</ConformanceMode>
       <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <AdditionalOptions>/fp:except %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -109,6 +110,7 @@
       <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
       <OmitFramePointers>false</OmitFramePointers>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <AdditionalOptions>/fp:except %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -135,6 +137,10 @@
     <ClCompile Include="granular_synth.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="midi.c" />
+    <ClCompile Include="sndfilter\biquad.c" />
+    <ClCompile Include="sndfilter\mem.c" />
+    <ClCompile Include="sndfilter\reverb.c" />
+    <ClCompile Include="sndfilter\snd.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="granular_synth.h" />
@@ -146,6 +152,10 @@
     <ClInclude Include="smol_font_16x16.h" />
     <ClInclude Include="smol_frame.h" />
     <ClInclude Include="smol_utils.h" />
+    <ClInclude Include="sndfilter\biquad.h" />
+    <ClInclude Include="sndfilter\mem.h" />
+    <ClInclude Include="sndfilter\reverb.h" />
+    <ClInclude Include="sndfilter\snd.h" />
     <ClInclude Include="vec.h" />
   </ItemGroup>
   <ItemGroup>

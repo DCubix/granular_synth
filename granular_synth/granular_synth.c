@@ -1,9 +1,13 @@
 #include "granular_synth.h"
 
+#define _USE_MATH_DEFINES
 #include <math.h>
 
+#include <assert.h>
+
 float tunable_sigmoid_curve(float x, float k) {
-	k = fmaxf(-1.0f, fminf(1.0f, k));
+	k = fmaxf(-0.9999f, fminf(0.9999f, k));
+	x = fmaxf(0.0f, fminf(1.0f, x));
 	return (x - k * x) / (k - 2.0f * k * fabsf(x) + 1.0f);
 }
 
@@ -103,7 +107,6 @@ void adsr_gate(adsr_t* adsr, int gate) {
 }
 
 void adsr_update(adsr_t* adsr, float sample_rate) {
-	const double inv_sample_rate = 1.0 / sample_rate;
 	const float k = 0.5f;
 	switch (adsr->state) {
 		case ADSR_IDLE: {
@@ -118,37 +121,32 @@ void adsr_update(adsr_t* adsr, float sample_rate) {
 				adsr->state = ADSR_DECAY;
 				adsr->time = 0.0f;
 			}
-			else {
-				adsr->time += inv_sample_rate;
-			}
 		} break;
 		case ADSR_DECAY: {
 			float t = adsr->time / adsr->decay;
 
-			adsr->value = smol_mixf(1.0f, adsr->sustain, tunable_sigmoid_curve(1.0f - t, k));
+			adsr->value = smol_mixf(1.0f, adsr->sustain, tunable_sigmoid_curve(t, k));
 
 			if (t >= 1.0f) {
 				adsr->state = ADSR_SUSTAIN;
-			}
-			else {
-				adsr->time += inv_sample_rate;
+				adsr->time = 0.0f;
 			}
 		} break;
 		case ADSR_SUSTAIN: {
 			adsr->value = adsr->sustain;
+			adsr->time = 0.0f;
 		} break;
 		case ADSR_RELEASE: {
 			float t = adsr->time / adsr->release;
 			
-			adsr->value = smol_mixf(0.0f, adsr->sustain, tunable_sigmoid_curve(1.0f - t, k));
+			adsr->value = smol_mixf(adsr->sustain, 0.0f, tunable_sigmoid_curve(t, k));
 			if (t >= 1.0f) {
 				adsr->state = ADSR_IDLE;
 			}
-			else {
-				adsr->time += inv_sample_rate;
-			}
 		} break;
 	}
+	const double inv_sample_rate = 1.0 / sample_rate;
+	adsr->time += inv_sample_rate;
 }
 
 void grain_init(grain_t* grain) {
@@ -247,7 +245,7 @@ void grain_render_channel(grain_t* grain, smol_audiobuffer_t* buffer, int channe
 	) * grain->computed_amplitude;
 }
 
-void voice_init(voice_t* voice) {
+void voice_init(voice_t* voice, int sample_rate) {
 	voice->grain_settings.grains_per_second = 10;
 	voice->grain_settings.position = 0.0f;
 	voice->grain_settings.size = 0.1f;
@@ -262,10 +260,22 @@ void voice_init(voice_t* voice) {
 	}
 	
 	adsr_init(&voice->amplitude_envelope);
-	voice->amplitude_envelope.attack = 0.4f;
+	voice->amplitude_envelope.attack = 0.2f;
 	voice->amplitude_envelope.decay = 0.0f;
 	voice->amplitude_envelope.sustain = 1.0f;
-	voice->amplitude_envelope.release = 1.0f;
+	voice->amplitude_envelope.release = 1.5f;
+
+	voice->lowpass_filter_params.cutoff = 20.0f;
+
+	for (size_t i = 0; i < 2; i++) {
+		filter_lowpass_init(&voice->lowpass_filter[i], sample_rate, &voice->lowpass_filter_params);
+	}
+
+	adsr_init(&voice->lowpass_filter_envelope);
+	voice->lowpass_filter_envelope.attack = 2.5f;
+	voice->lowpass_filter_envelope.decay = 0.5f;
+	voice->lowpass_filter_envelope.sustain = 0.3f;
+	voice->lowpass_filter_envelope.release = 1.5f;
 }
 
 grain_t* voice_get_free_grain(voice_t* voice) {
@@ -290,8 +300,17 @@ void voice_spawn_grain(voice_t* voice) {
 	grain->smoothness = voice->grain_settings.smoothness;
 	grain->pitch = voice->note_settings.pitch;
 	grain->velocity = voice->note_settings.velocity;
-	grain->play_mode = GRAIN_FORWARD; // TODO: direction parameter
+	grain->play_mode = GRAIN_FORWARD;
 	grain->state = GRAIN_PLAYING;
+
+	switch (voice->grain_settings.play_mode) {
+		case GS_PLAY_FORWARD: grain->play_mode = GRAIN_FORWARD; break;
+		case GS_PLAY_REVERSE: grain->play_mode = GRAIN_REVERSE; break;
+		case GS_PLAY_PINGPONG: grain->play_mode = GRAIN_PINGPONG; break;
+		case GS_PLAY_RANDOM_BACK_AND_FORTH: {
+			grain->play_mode = smol_rnd(0, 100) > 50 ? GRAIN_FORWARD : GRAIN_REVERSE;
+		} break;
+	}
 
 	// apply random size
 	grain->size += smol_randf(
@@ -310,6 +329,7 @@ int voice_is_free(voice_t* voice) {
 
 void voice_gate(voice_t* voice, int gate) {
 	adsr_gate(&voice->amplitude_envelope, gate);
+	adsr_gate(&voice->lowpass_filter_envelope, gate);
 	if (gate) {
 		voice->state = VOICE_GATE;
 	} else {
@@ -326,6 +346,12 @@ void voice_render_channel(voice_t* voice, smol_audiobuffer_t* buffer, int channe
 		float val = 0.0f;
 		grain_render_channel(grain, buffer, channel, &val);
 		accum += val;
+	}
+
+	// apply filters
+	filter_t* filter = &voice->lowpass_filter[channel];
+	if (filter->process) {
+		accum = filter_process(filter, accum, voice->lowpass_filter_envelope.value);
 	}
 
 	*out = accum * voice->amplitude_envelope.value;
@@ -351,13 +377,45 @@ void voice_advance(voice_t* voice, float sample_rate) {
 	}
 
 	adsr_update(&voice->amplitude_envelope, sample_rate);
+	adsr_update(&voice->lowpass_filter_envelope, sample_rate);
 
 	if (all_grains_finished && voice->amplitude_envelope.state == ADSR_IDLE) {
 		voice->state = VOICE_IDLE;
 	}
 }
 
-void granular_synth_init(granular_synth_t* synth, const char* sample_file) {
+float filter_init(filter_t* filter, int sample_rate) {
+	filter->params = NULL;
+	filter->process = NULL;
+	filter->previous_output = 0.0f;
+	filter->inv_sample_rate = 1.0 / (double)sample_rate;
+}
+
+float filter_process(filter_t* filter, float input, float amount) {
+	return filter->process(filter, input, amount);
+}
+
+
+float _filter_lowpass_process(filter_t* filter, float input, float amount) {
+	filter_lowpass_params_t* p = (filter_lowpass_params_t*)filter->params;
+	
+	double cutoff = smol_mixd((double)p->cutoff, 20000.0, amount);
+	double t = tan(M_PI * cutoff * filter->inv_sample_rate);
+	double a1 = (t - 1.0) / (t + 1.0);
+
+	float output = a1 * input + filter->previous_output;
+	filter->previous_output = input - a1 * output;
+
+	return (output + input) * 0.5f;
+}
+
+void filter_lowpass_init(filter_t* filter, int sample_rate, filter_lowpass_params_t* params) {
+	filter_init(filter, sample_rate);
+	filter->params = params;
+	filter->process = _filter_lowpass_process;
+}
+
+void granular_synth_init(granular_synth_t* synth, int sample_rate, const char* sample_file) {
 	synth->sample.buffer = smol_create_audiobuffer_from_wav_file(sample_file);
 	synth->sample.window_start = 0.0f;
 	synth->sample.window_end = synth->sample.buffer.duration;
@@ -371,8 +429,10 @@ void granular_synth_init(granular_synth_t* synth, const char* sample_file) {
 	synth->tuning = 0.0f;
 
 	for (size_t i = 0; i < GS_SYNTH_MAX_VOICES; i++) {
-		voice_init(&synth->voices[i]);
+		voice_init(&synth->voices[i], sample_rate);
 	}
+
+	sf_presetreverb(&synth->reverb_filter, sample_rate, SF_REVERB_PRESET_LONGREVERB1);
 }
 
 void granular_synth_render_channel(granular_synth_t* synth, int channel, float* out) {
@@ -384,8 +444,16 @@ void granular_synth_render_channel(granular_synth_t* synth, int channel, float* 
 		float val = 0.0f;
 		voice_render_channel(voice, &synth->sample.buffer, channel, &val);
 		accum += val;
+		assert(accum == accum);
 	}
-	*out = accum;
+
+	// apply reverb
+	sf_sample_st in_rev, out_rev;
+	in_rev.L = in_rev.R = accum;
+
+	sf_reverb_process(&synth->reverb_filter, 1, &in_rev, &out_rev);
+
+	*out = out_rev.L;
 }
 
 void granular_synth_advance(granular_synth_t* synth) {
@@ -411,7 +479,7 @@ void granular_synth_noteon(granular_synth_t* synth, uint32_t id, float pitch, fl
 		return;
 	}
 
-	voice_init(voice);
+	voice_init(voice, synth->sample.buffer.sample_rate);
 	voice->id = id;
 	voice->note_settings.pitch = pitch + synth->tuning;
 	voice->note_settings.velocity = velocity;
@@ -419,6 +487,7 @@ void granular_synth_noteon(granular_synth_t* synth, uint32_t id, float pitch, fl
 	voice->grain_settings.size = synth->sample.window_end - synth->sample.window_start;
 	voice->grain_settings.grains_per_second = synth->grain_settings.grains_per_second;
 	voice->grain_settings.smoothness = synth->grain_settings.grain_smoothness;
+	voice->grain_settings.play_mode = synth->grain_settings.play_mode;
 	voice->grain_spawn_timer = voice->grain_settings.grains_per_second;
 	voice->random_settings.size_random = synth->random_settings.size_random;
 	voice->random_settings.position_offset_random = synth->random_settings.position_offset_random;

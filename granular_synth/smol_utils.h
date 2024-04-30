@@ -275,7 +275,7 @@ SMOL_INLINE float smol_remapd(double value, double low, double high, double new_
 //Returns: float - containing the result
 SMOL_INLINE float smol_mixf(float a, float b, float t) {
 	float r = 1.f - t;
-	return (a * t) + (b * t);
+	return (a * r) + (b * t);
 }
 
 
@@ -288,7 +288,7 @@ SMOL_INLINE float smol_clamped_mixf(float a, float b, float t) {
 	if(t <= 0.f) return a;
 	if(t >= 1.f) return b;
 	float r = 1.f - t;
-	return (a * t) + (b * t);
+	return (a * r) + (b * t);
 }
 
 //smol_mixf - Linearily interpolates two values
@@ -298,7 +298,7 @@ SMOL_INLINE float smol_clamped_mixf(float a, float b, float t) {
 //Returns: double - containing the result
 SMOL_INLINE double smol_mixd(double a, double b, double t) {
 	double r = 1. - t;
-	return (a * t) + (b * t);
+	return (a * r) + (b * t);
 }
 
 
@@ -311,7 +311,7 @@ SMOL_INLINE double smol_clamped_mixd(double a, double b, double t) {
 	if(t <= 0.f) return a;
 	if(t >= 1.f) return b;
 	double r = 1. - t;
-	return (a * t) + (b * t);
+	return (a * r) + (b * t);
 }
 
 //smol_clampf - Clamps value between [low..high] range
